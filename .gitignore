@@ -1,0 +1,16 @@
+node_modules/
+
+# 开发脚手架：不属于插件本体（注意用的是下划线，仓库内的 test-multi-source.js 用连字符）
+am_*.js
+dbg_*.js
+test.js
+test2.js
+test3.js
+test4.js
+test_*.js
+README.txt
+qq_*.json
+ne*.json
+ne*.txt
+qq*.txt
+*.log

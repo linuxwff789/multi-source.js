@@ -1,0 +1,24 @@
+{
+  "name": "musicfree-multi-source",
+  "version": "0.1.0",
+  "description": "MusicFree 插件：QQ音乐 + 网易云 + Audiomack 多源歌单导入/搜索/换源",
+  "main": "multi-source.js",
+  "scripts": {
+    "test": "node test-multi-source.js"
+  },
+  "keywords": [
+    "musicfree",
+    "plugin",
+    "qqmusic",
+    "netease",
+    "audiomack"
+  ],
+  "author": "linuxwff789",
+  "license": "MIT",
+  "devDependencies": {
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "crypto-js": "^4.2.0",
+    "dayjs": "^1.11.13"
+  }
+}
