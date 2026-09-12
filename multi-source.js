@@ -598,9 +598,16 @@ function matchScore(target, cand) {
   // 都有艺人却对不上，说明是翻唱/同曲不同人 → 淘汰
   if (bothHaveArtists && !artistOk) return 0;
 
+  // 双方都有专辑名且明显不同 → 不同版本（录音室 vs Live），淘汰。
+  // 例：范特西 270s vs The One演唱会 273s，光靠时长拦不住。
+  const alA = normText(target.album);
+  const alB = normText(cand.album);
+  if (alA && alB && !(alA.includes(alB) || alB.includes(alA))) return 0;
+
   if (target.duration && cand.duration) {
+    // 与 sameTrack 一致：5s/5%，253s 翻录版不能通过 270s 正版的匹配
     const diff = Math.abs(target.duration - cand.duration);
-    const tol = Math.max(5, Math.max(target.duration, cand.duration) * 0.08);
+    const tol = Math.max(5, Math.max(target.duration, cand.duration) * 0.05);
     score += diff <= tol ? 3 : -2;
   }
   return score;
@@ -705,8 +712,8 @@ const MERGE_SOURCE_PRIORITY = ["netease", "qq", "audiomack"];
 
 function mergePreferScore(item) {
   const p = MERGE_SOURCE_PRIORITY.indexOf(item.source);
-  // 无专辑信息的条目多半是翻录/盗传（正版发行必有专辑名），降权
-  return (item.pay === 1 ? 10 : 0) + (String(item.album || "").trim() ? 0 : 5) + (p < 0 ? 99 : p);
+  // 无专辑信息的条目（翻录/盗传/cover）信息不可信：可以当播放兜底，但绝不能当 primary
+  return (item.pay === 1 ? 10 : 0) + (String(item.album || "").trim() ? 0 : 20) + (p < 0 ? 99 : p);
 }
 
 /** 合并判定：必须标题一致 **且艺人重合**（时长只用来排除离谱的）
@@ -725,6 +732,12 @@ function sameTrack(a, b) {
     aA.length && aB.length && aA.some(x => aB.some(y => x.includes(y) || y.includes(x)));
   if (!artistOk) return false;
 
+  // 双方都有专辑名且明显不同 → 是不同版本（录音室 vs Live 等），不并。
+  // 例：范特西 270s 和 The One演唱会 273s 只差 3s，光靠时长拦不住。
+  const alA = normText(a.album);
+  const alB = normText(b.album);
+  if (alA && alB && !(alA.includes(alB) || alB.includes(alA))) return false;
+
   if (a.duration && b.duration) {
     // 容差 5s/5%：10% 会把 253s 的翻录版和 270s 正版(范特西)并成一组
     const diff = Math.abs(a.duration - b.duration);
@@ -741,7 +754,9 @@ function mergeSameTracks(items) {
     let target = null;
     for (const g of groups) {
       if (g.key !== key) continue;
-      if (g.members.some(m => sameTrack(m, it))) {
+      // 必须与组内**每个**成员都相似。用 .some 会被空专辑条目"桥接"传递：
+      // 正版范特西 ↔ 无专辑cover ↔ 无专辑翻录 串成一组，Live 版也混进来。
+      if (g.members.every(m => sameTrack(m, it))) {
         target = g;
         break;
       }
@@ -775,7 +790,7 @@ function mergeSameTracks(items) {
 
 module.exports = {
   platform: "多源歌单",
-  version: "0.1.1",
+  version: "0.1.2",
   appVersion: ">=0.0",
   cacheControl: "no-cache",
   // id 已带 source 前缀，单主键即可全局唯一
