@@ -613,6 +613,17 @@ function matchScore(target, cand) {
   return score;
 }
 
+/** 兜底候选可信度（宁缺毋滥）：
+ *  目标有专辑时，候选必须也有专辑且一致。空专辑无法证明是同一录音——
+ *  AM 上"简单爱 (cover)" 271s 就是靠艺人+时长混进兜底，放出来是翻唱。 */
+function fallbackTrustOk(target, cand) {
+  const alT = normText(target.album);
+  const alC = normText(cand.album);
+  if (!alT) return true; // 目标自身无专辑信息可比对，交给 matchScore
+  if (!alC) return false; // 候选无专辑 → 无法验证身份 → 不用
+  return alT.includes(alC) || alC.includes(alT);
+}
+
 /** 按 item.source 取播放地址（原生和兜底共用） */
 async function getSourceBySource(item, quality, cookies = {}) {
   if (!item) return null;
@@ -681,7 +692,7 @@ async function findAlternative(musicItem, quality, cookies) {
       }
       const ranked = list
         .map(x => ({ item: x, score: matchScore(musicItem, x) }))
-        .filter(c => c.score >= 3)
+        .filter(c => c.score >= 3 && fallbackTrustOk(musicItem, c.item))
         .sort((a, b) => b.score - a.score);
 
       for (const c of ranked.slice(0, 3)) {
@@ -790,7 +801,7 @@ function mergeSameTracks(items) {
 
 module.exports = {
   platform: "多源歌单",
-  version: "0.1.2",
+  version: "0.1.3",
   appVersion: ">=0.0",
   cacheControl: "no-cache",
   // id 已带 source 前缀，单主键即可全局唯一
@@ -891,6 +902,10 @@ module.exports = {
     // 2a. 优先用搜索合并时挂上的备选源（同一首歌在别的平台的副本，不用再搜一遍）
     if (Array.isArray(musicItem.alts) && musicItem.alts.length) {
       for (const alt of musicItem.alts) {
+        if (!fallbackTrustOk(musicItem, alt)) {
+          console.log(`[换源] 跳过不可信备选 ${alt.id}（专辑无法确认是同一录音）`);
+          continue;
+        }
         const r = await getSourceBySource(alt, quality, cookies).catch(() => null);
         if (r && r.url) {
           console.log(`[换源] "${musicItem.title}" 用搜索合并的备选源 ${alt.source}`);
