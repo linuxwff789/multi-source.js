@@ -675,9 +675,11 @@ async function findAlternative(musicItem, quality, cookies) {
 
   const order = FALLBACK_ORDER[musicItem.source] || [];
   // 先用「标题 + 艺人」精确搜，搜不到再退回只用标题
+  // （标题里可能有"·未验证"标记，搜别的平台时要剔掉）
+  const cleanTitle = String(musicItem.title || "").replace(/\s*·未验证\s*$/, "");
   const queries = [
-    [musicItem.title, musicItem.artist].filter(Boolean).join(" "),
-    String(musicItem.title || ""),
+    [cleanTitle, musicItem.artist].filter(Boolean).join(" "),
+    cleanTitle,
   ].filter((q, i, arr) => q && arr.indexOf(q) === i);
   if (!queries.length) return null;
 
@@ -801,7 +803,7 @@ function mergeSameTracks(items) {
 
 module.exports = {
   platform: "多源歌单",
-  version: "0.1.3",
+  version: "0.1.4",
   appVersion: ">=0.0",
   cacheControl: "no-cache",
   // id 已带 source 前缀，单主键即可全局唯一
@@ -856,11 +858,20 @@ module.exports = {
     // 合并开关（默认开）：同一首歌在多个源出现时只留一条，备选源挂 alts
     const merge = String(vars.merge ?? "on").trim().toLowerCase();
     const noMerge = merge === "off" || merge === "false" || merge === "0";
+    const data = noMerge ? merged : mergeSameTracks(merged);
+
+    // 透明度标记：无专辑 = 无法确认是哪一版（翻录/翻唱/盗传高发），明示给用户
+    const UNVERIFIED = " ·未验证";
+    const marked = data.map(it =>
+      String(it.album || "").trim() || String(it.title || "").includes(UNVERIFIED)
+        ? it
+        : { ...it, title: `${it.title}${UNVERIFIED}` }
+    );
 
     return {
       // 所有源都到头了才算 end，否则宿主就不给翻下一页了
       isEnd: settled.every(r => r.isEnd),
-      data: noMerge ? merged : mergeSameTracks(merged),
+      data: marked,
     };
   },
 
