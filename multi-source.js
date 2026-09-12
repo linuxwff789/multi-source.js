@@ -705,7 +705,8 @@ const MERGE_SOURCE_PRIORITY = ["netease", "qq", "audiomack"];
 
 function mergePreferScore(item) {
   const p = MERGE_SOURCE_PRIORITY.indexOf(item.source);
-  return (item.pay === 1 ? 10 : 0) + (p < 0 ? 99 : p);
+  // 无专辑信息的条目多半是翻录/盗传（正版发行必有专辑名），降权
+  return (item.pay === 1 ? 10 : 0) + (String(item.album || "").trim() ? 0 : 5) + (p < 0 ? 99 : p);
 }
 
 /** 合并判定：必须标题一致 **且艺人重合**（时长只用来排除离谱的）
@@ -725,8 +726,9 @@ function sameTrack(a, b) {
   if (!artistOk) return false;
 
   if (a.duration && b.duration) {
+    // 容差 5s/5%：10% 会把 253s 的翻录版和 270s 正版(范特西)并成一组
     const diff = Math.abs(a.duration - b.duration);
-    const tol = Math.max(8, Math.max(a.duration, b.duration) * 0.1);
+    const tol = Math.max(5, Math.max(a.duration, b.duration) * 0.05);
     if (diff > tol) return false;
   }
   return true;
@@ -773,7 +775,7 @@ function mergeSameTracks(items) {
 
 module.exports = {
   platform: "多源歌单",
-  version: "0.1.0",
+  version: "0.1.1",
   appVersion: ">=0.0",
   cacheControl: "no-cache",
   // id 已带 source 前缀，单主键即可全局唯一
