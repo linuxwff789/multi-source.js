@@ -6,7 +6,24 @@
 开发依据：[maotoumao/MusicFree](https://github.com/maotoumao/MusicFree) 的插件协议与宿主源码
 （`src/core/pluginManager/plugin.ts`、`src/pages/searchPage/hooks/useSearch.ts`、`src/utils/mediaUtils.ts`）。
 
+## 插件地址
+
+在 MusicFree 里「我的 → 插件 → 从 URL 安装插件」，直接填下面这条：
+
+```
+https://raw.githubusercontent.com/linuxwff789/multi-source.js/main/multi-source.js
+```
+
+国内访问 `raw.githubusercontent.com` 不稳定时，用 jsDelivr 镜像（内容相同）：
+
+```
+https://cdn.jsdelivr.net/gh/linuxwff789/multi-source.js@main/multi-source.js
+```
+
+> 也可以把 `multi-source.js` 下载到手机后用「从本地安装」选择该文件。
+
 ## 特性
+
 
 - **搜索**：一次查询并行打三个平台，结果按源轮流交错；同一首歌跨平台重复时自动合并成一条
 - **导入歌单**：粘贴分享文本 / 链接 / 歌单 ID 即可，插件按域名自动分发
