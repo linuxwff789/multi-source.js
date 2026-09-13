@@ -242,6 +242,88 @@ function loadPluginAsHost(onRequire) {
     );
   }
 
+  section("4b. 同一录音判定：专辑不同但母带相同（换源回归用例）");
+  {
+    const { matchInfo } = plugin._internal;
+
+    // 实测数据：修炼爱情 在 QQ/网易云都无版权，AM 上挂在合集「8090's 经典」下，
+    // 与原专辑「因你而在」逐秒相同。旧规则按「专辑不同」一票否决 → 换源整个失效。
+    const neXiuLian = { title: "修炼爱情", artist: "林俊杰", album: "因你而在", duration: 287 };
+    const amXiuLian = { title: "修炼爱情", artist: "林俊杰", album: "8090's 经典", duration: 287 };
+    const m1 = matchInfo(neXiuLian, amXiuLian);
+    assert(!!m1, "合集同名母带（专辑不同/时长相同）命中");
+    assert(!!m1 && m1.tier === "master", "判定为 master 档（时长精确补强）", m1 && m1.tier);
+
+    // 现场版：专辑含「演唱会」标记 + 只差 3s → 双重拦掉
+    assert(
+      matchInfo(
+        { title: "晴天", artist: "周杰伦", album: "叶惠美", duration: 270 },
+        { title: "晴天", artist: "周杰伦", album: "The One演唱会", duration: 273 }
+      ) === null,
+      "演唱会版 被拦掉（现场标记 + 时长只到 close 档）"
+    );
+    // 综艺现场
+    assert(
+      matchInfo(neXiuLian, {
+        title: "修炼爱情",
+        artist: "林俊杰 / 张梦羽 / 胖胖胖",
+        album: "谁是大歌神 第3期",
+        duration: 251,
+      }) === null,
+      "综艺现场版 被拦掉"
+    );
+    // cover 标记（无专辑也拦）
+    assert(
+      matchInfo(
+        { title: "简单爱", artist: "周杰伦", album: "范特西", duration: 270 },
+        { title: "简单爱 (cover)", artist: "周杰伦", duration: 271 }
+      ) === null,
+      "cover 版 被拦掉"
+    );
+    // 候选无专辑（目标有）：默认作 loose 档最后手段（AM 上大量上传件没有专辑字段），
+    // strict 模式下拒绝
+    const looseTarget = { title: "简单爱", artist: "周杰伦", album: "范特西", duration: 270 };
+    const looseCand = { title: "简单爱", artist: "周杰伦", duration: 270 };
+    const mLoose = matchInfo(looseTarget, looseCand);
+    assert(!!mLoose && mLoose.tier === "loose", "候选无专辑 → loose 档（默认允许）", mLoose && mLoose.tier);
+    assert(
+      matchInfo(looseTarget, looseCand, { strict: true }) === null,
+      "strict 模式下 无专辑候选 被拒"
+    );
+    assert(
+      matchInfo(looseTarget, { title: "简单爱", artist: "周杰伦", duration: 283 }) === null,
+      "无专辑且时长差 13s → 连 loose 也不给"
+    );
+    // 翻录版：时长差 17s
+    assert(
+      matchInfo(
+        { title: "简单爱", artist: "周杰伦", album: "范特西", duration: 270 },
+        { title: "简单爱", artist: "周杰伦", album: "范特西", duration: 253 }
+      ) === null,
+      "253s 翻录版 被拦掉"
+    );
+    // 专辑确认 → album 档
+    const m2 = matchInfo(
+      { title: "晴天", artist: "周杰伦", album: "叶惠美", duration: 269 },
+      { title: "晴天", artist: "周杰伦", album: "叶惠美", duration: 269 }
+    );
+    assert(!!m2 && m2.tier === "album", "专辑一致 → album 档（无需时长也能认）");
+
+    // 合并：主流母带合并成一条且带 AM 备选，现场版单独一条
+    const { mergeSameTracks } = plugin._internal;
+    const mergedCase = mergeSameTracks([
+      { source: "netease", id: "ne:1", title: "修炼爱情", artist: "林俊杰", album: "因你而在", duration: 287 },
+      { source: "audiomack", id: "am:1", title: "修炼爱情", artist: "林俊杰", album: "8090's 经典", duration: 287 },
+      { source: "qq", id: "qq:1", title: "修炼爱情", artist: "林俊杰", album: "谁是大歌神 第3期", duration: 251 },
+    ]);
+    const primary = mergedCase.find(x => x.source === "netease");
+    assert(
+      mergedCase.length === 2 && primary && primary.alts && primary.alts.some(a => a.source === "audiomack"),
+      "同母带合并为一条且备选源含 audiomack",
+      `合并后 ${mergedCase.length} 条`
+    );
+  }
+
   section("5. 导入歌单");
   const imported = {};
   for (const [name, src] of [
@@ -315,6 +397,53 @@ function loadPluginAsHost(onRequire) {
       const s = await plugin.getMediaSource(target, "standard").catch(() => null);
       USER_VARS.fallback = "on";
       assert(!s || !s.url, "fallback=off 时不换源");
+    }
+  }
+
+  section("7b. 换源回归：QQ/网易云拿不到原曲时，靠 AM 合集中的同一录音救回");
+  {
+    const { findAlternative, matchInfo } = plugin._internal;
+    // 用户在歌单里点的那条：网易云《修炼爱情》原专辑条目（真机上表现为下架/无地址）
+    const target = {
+      source: "netease",
+      id: "ne:regression",
+      nid: "25727803",
+      title: "修炼爱情",
+      artist: "林俊杰",
+      album: "因你而在",
+      duration: 287,
+    };
+    try {
+      const searched = await plugin.search("修炼爱情 林俊杰", 1, "music");
+      const amItem = searched.data.find(
+        x => x.source === "audiomack" && String(x.album || "").includes("8090")
+      );
+      if (!amItem) {
+        skip("《修炼爱情》换源回归", "AM 上没搜到合集中的该曲（源波动）");
+      } else if (!amReachable) {
+        skip("《修炼爱情》换源回归", "Audiomack 不可达");
+      } else {
+        const info = matchInfo(target, amItem);
+        assert(
+          !!info && info.tier === "master",
+          "AM 合集条目被判为同一录音（master 档）",
+          info ? `${info.tier} score=${info.score}` : "无"
+        );
+        const hit = await findAlternative(target, "standard", {});
+        assert(!!(hit && hit.url), "换源命中并拿到真实地址", String(target.title));
+        if (hit && hit._fallbackFrom) {
+          ok("换到的源", `${hit._fallbackFrom.source} / ${hit._fallbackFrom.album || "无专辑"}`);
+        }
+        // 严格模式下必须拒绝无专辑候选，但这条目标本身有专辑，
+        // master 档不该被 strict 影响 → 结果应保持一致
+        const hitStrict = await findAlternative(target, "standard", {}, true);
+        assert(
+          !!(hitStrict && hitStrict.url),
+          "strict_match=on 时 master 档仍然命中（严格模式只砍 loose 档）"
+        );
+      }
+    } catch (e) {
+      no("《修炼爱情》换源回归异常", e.message);
     }
   }
 

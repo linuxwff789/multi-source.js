@@ -563,65 +563,120 @@ function splitArtists(s) {
 }
 
 /**
- * 明确「不是同一录音」的标记。标题归一化会剃掉括号内容，
- * 于是「如果寂寞了（伴奏）」会和「如果寂寞了」变得一模一样，
- * 艺人又相同时就会满分命中，结果放出伴奏/消音版。这里单独拦一道。
- * （Live / Remix / DJ版 之类不拦，只是不同演绎，仍可接受）
+ * 「换了演绎」的三类文字标记：候选带、目标不带 → 不是同一个录音。
+ * 标题归一化会剃掉括号内容，于是「如果寂寞了（伴奏）」和「如果寂寞了」变得一模一样，
+ * 艺人又相同时会满分命中，结果放出伴奏/消音版；cover/现场同理。
+ * 这三类标记是与「换了个专辑容器」区分的唯一依据（见 matchInfo）。
  */
 const VERSION_BLOCK =
   /伴奏|纯伴奏|消音|无人声|instrumental|off\s*vocal|offvocal|karaoke|カラオケ/i;
+const COVER_BLOCK = /\bcover\b|翻唱|翻自|致敬|重唱|原唱|模仿|remix\s*版|改编/i;
+const LIVE_BLOCK =
+  /演唱会|现场版?|音乐会|演奏会|巡回|第\s*\d+\s*期|跨年|晚会|音乐节|盛典|颁奖|歌会|我是歌手|梦想的声音|大歌神|我想和你唱|好声音|\blive\b|unplugged|acoustic/i;
 
-function isBlockedVersion(target, cand) {
-  const t = String(target.title || "");
-  const c = String(cand.title || "");
-  return VERSION_BLOCK.test(c) && !VERSION_BLOCK.test(t);
+function markedAs(block, target, cand) {
+  const hit = s => block.test(String(s || ""));
+  const t = hit(target.title) || hit(target.album);
+  const c = hit(cand.title) || hit(cand.album);
+  return c && !t;
 }
 
-/** 打分：标题命中 1 分，艺人重合 +2，时长接近 +3，时长差太多 -2；>=3 才认。
- *  关键规则：**双方都有艺人但艺人不重合 → 直接淘汰（0 分）**，
- *  否则会拿"标题+时长"凑够分，把翻唱/钢琴版当成原曲放出来。 */
-function matchScore(target, cand) {
+/**
+ * 时长档位。同一母带（包括被复制进合集/精选集的那份）几乎逐秒相同，
+ * 而任何现场/重录演绎都会明显偏长偏短 —— 所以用「精确」这一档来顶替
+ * 过去「专辑名必须一致」的硬要求。
+ */
+function durationTier(target, cand) {
+  if (!target.duration || !cand.duration) return "unknown";
+  const diff = Math.abs(target.duration - cand.duration);
+  const base = Math.max(target.duration, cand.duration);
+  if (diff <= Math.max(2, base * 0.01)) return "exact";
+  if (diff <= Math.max(5, base * 0.05)) return "close";
+  return "far";
+}
+
+/**
+ * 同一录音判定（换源和搜索合并共用同一套规则，避免两处规则不一致）。
+ *
+ * 返回 { score, tier } 或 null（null = 不是同一个录音）：
+ *   tier = "album"   专辑名互相包含 → 身份确认
+ *   tier = "master"  专辑名不一致（或一方缺失），但艺人重合 + 时长精确吻合
+ *   tier = "loose"   候选**完全没有专辑字段**，只靠艺人 + 时长精确吻合顶上
+ *   score = 标题 1 + 艺人 2 + 时长（精确 3 / 接近 2）+ 专辑确认 1，仅用于排序
+ *
+ * opts.strict = true 时不接受 loose（搜索合并用它，避免无专辑的翻录/cover
+ * 被"桥接"成正版的同一组；换源默认允许，否则 AM 上大量无专辑的用户上传件全废）。
+ *
+ * 硬淘汰的都是「换了演绎」的证据，而不是「换了专辑」：
+ *   标题不符；双方都有艺人却不重合；候选带伴奏/消音标记；候选带 cover/翻唱标记；
+ *   候选带现场/综艺标记；双方时长都有但差超过 5s 或 5%。
+ *
+ * 关键改动：**专辑名不一致不再单独淘汰**。海外平台常把同一录音挂在合集/精选集下——
+ * 实测《修炼爱情》QQ/网易云都无版权，AM 上是「8090's 经典」287s，与原专辑
+ * 「因你而在」287s 逐秒相同；旧规则按「专辑不同」一票否决，换源于是整个失效。
+ * 现在这种候选走 master 档放行；而 范特西 270s ↔ The One演唱会 273s 这类
+ * 被现场标记 + 3s 偏差（只到 close 档）双重拦掉。
+ */
+function matchInfo(target, cand, opts) {
+  const strict = !!(opts && opts.strict);
+  if (!target || !cand) return null;
   const nt = normText(target.title);
   const nc = normText(cand.title);
-  if (!nt || !nc) return 0;
-  const titleOk = nt === nc || nc.includes(nt) || nt.includes(nc);
-  if (!titleOk) return 0;
-  if (isBlockedVersion(target, cand)) return 0;
+  if (!nt || !nc) return null;
+  if (!(nt === nc || nc.includes(nt) || nt.includes(nc))) return null;
+  if (markedAs(VERSION_BLOCK, target, cand)) return null;
+  if (markedAs(COVER_BLOCK, target, cand)) return null;
+  if (markedAs(LIVE_BLOCK, target, cand)) return null;
 
-  let score = 1;
   const aA = splitArtists(target.artist);
   const aB = splitArtists(cand.artist);
   const bothHaveArtists = aA.length > 0 && aB.length > 0;
   const artistOk =
     bothHaveArtists && aA.some(x => aB.some(y => x.includes(y) || y.includes(x)));
-  if (artistOk) score += 2;
-  // 都有艺人却对不上，说明是翻唱/同曲不同人 → 淘汰
-  if (bothHaveArtists && !artistOk) return 0;
+  // 都有艺人却对不上 → 翻唱 / 同曲不同人
+  if (bothHaveArtists && !artistOk) return null;
 
-  // 双方都有专辑名且明显不同 → 不同版本（录音室 vs Live），淘汰。
-  // 例：范特西 270s vs The One演唱会 273s，光靠时长拦不住。
-  const alA = normText(target.album);
-  const alB = normText(cand.album);
-  if (alA && alB && !(alA.includes(alB) || alB.includes(alA))) return 0;
+  const dt = durationTier(target, cand);
+  // 两个已知时长差太远 → 不同录音（253s 的翻录版放不进 270s 的正版）
+  if (dt === "far") return null;
 
-  if (target.duration && cand.duration) {
-    // 与 sameTrack 一致：5s/5%，253s 翻录版不能通过 270s 正版的匹配
-    const diff = Math.abs(target.duration - cand.duration);
-    const tol = Math.max(5, Math.max(target.duration, cand.duration) * 0.05);
-    score += diff <= tol ? 3 : -2;
-  }
-  return score;
-}
-
-/** 兜底候选可信度（宁缺毋滥）：
- *  目标有专辑时，候选必须也有专辑且一致。空专辑无法证明是同一录音——
- *  AM 上"简单爱 (cover)" 271s 就是靠艺人+时长混进兜底，放出来是翻唱。 */
-function fallbackTrustOk(target, cand) {
   const alT = normText(target.album);
   const alC = normText(cand.album);
-  if (!alT) return true; // 目标自身无专辑信息可比对，交给 matchScore
-  if (!alC) return false; // 候选无专辑 → 无法验证身份 → 不用
-  return alT.includes(alC) || alC.includes(alT);
+  const albumConfirmed = !!(alT && alC && (alT.includes(alC) || alC.includes(alT)));
+
+  let score = 1;
+  if (artistOk) score += 2;
+  if (dt === "exact") score += 3;
+  else if (dt === "close") score += 2;
+  if (albumConfirmed) score += 1;
+
+  // 通过条件：专辑确认 → 艺人吻合即可；专辑不确认 → 必须艺人吻合 + 时长精确
+  let tier = null;
+  if (albumConfirmed && (artistOk || !bothHaveArtists)) tier = "album";
+  else if (artistOk && dt === "exact") tier = alT && !alC ? "loose" : "master";
+  if (!tier) return null;
+  if (tier === "loose" && strict) return null;
+
+  return { score, tier };
+}
+
+/** 排序权重：身份证据越硬越靠前 */
+const TIER_RANK = { album: 0, master: 1, loose: 2 };
+
+function tierRank(info) {
+  const r = info && TIER_RANK[info.tier];
+  return r === undefined ? 9 : r;
+}
+
+/** 兼容旧调用：0 表示不是同一录音，非 0 为匹配分（>=4） */
+function matchScore(target, cand) {
+  const info = matchInfo(target, cand);
+  return info ? info.score : 0;
+}
+
+/** 兜底候选是否可用 = 同一录音判定通过（宁缺毋滥）；与 matchInfo 等价，保留供调试/复用 */
+function fallbackTrustOk(target, cand) {
+  return !!matchInfo(target, cand);
 }
 
 /** 按 item.source 取播放地址（原生和兜底共用） */
@@ -664,7 +719,7 @@ function altCacheSet(key, item) {
 }
 
 /** 换源：按 FALLBACK_ORDER 依次找，每个源取分数最高的几个候选试 */
-async function findAlternative(musicItem, quality, cookies) {
+async function findAlternative(musicItem, quality, cookies, strict) {
   const cacheKey = `${musicItem.source}:${musicItem.id}`;
   const cached = altCacheGet(cacheKey);
   if (cached) {
@@ -693,15 +748,18 @@ async function findAlternative(musicItem, quality, cookies) {
         continue;
       }
       const ranked = list
-        .map(x => ({ item: x, score: matchScore(musicItem, x) }))
-        .filter(c => c.score >= 3 && fallbackTrustOk(musicItem, c.item))
-        .sort((a, b) => b.score - a.score);
+        .map(x => ({ item: x, info: matchInfo(musicItem, x, { strict }) }))
+        .filter(c => c.info)
+        // 先按身份证据（专辑确认 > 母带 > 无专辑兜底），再按分数
+        .sort(
+          (a, b) => tierRank(a.info) - tierRank(b.info) || b.info.score - a.info.score
+        );
 
       for (const c of ranked.slice(0, 3)) {
         const url = await getSourceBySource(c.item, quality, cookies).catch(() => null);
         if (url && url.url) {
           console.log(
-            `[换源] "${musicItem.title}" 播放失败 → 用 ${src} 的 "${c.item.title}" (score=${c.score}, ${c.item.duration}s, 查:"${query}")`
+            `[换源] "${musicItem.title}" 播放失败 → 用 ${src} 的 "${c.item.title}" (${c.info.tier}, score=${c.info.score}, ${c.item.duration}s, 查:"${query}")`
           );
           altCacheSet(cacheKey, c.item);
           return { ...url, [_FALLBACK_FROM]: c.item };
@@ -729,35 +787,9 @@ function mergePreferScore(item) {
   return (item.pay === 1 ? 10 : 0) + (String(item.album || "").trim() ? 0 : 20) + (p < 0 ? 99 : p);
 }
 
-/** 合并判定：必须标题一致 **且艺人重合**（时长只用来排除离谱的）
- *  注意不能直接复用 matchScore —— 那个规则里"时长接近"单独就够阈值，
- *  会把不同歌手的同曲翻唱并成一条。 */
+/** 合并判定：与换源共用 matchInfo，但走严格模式（不接受无专辑的 loose 候选） */
 function sameTrack(a, b) {
-  const nt = normText(a.title);
-  const nc = normText(b.title);
-  if (!nt || !nc) return false;
-  if (!(nt === nc || nc.includes(nt) || nt.includes(nc))) return false;
-  if (isBlockedVersion(a, b) || isBlockedVersion(b, a)) return false;
-
-  const aA = splitArtists(a.artist);
-  const aB = splitArtists(b.artist);
-  const artistOk =
-    aA.length && aB.length && aA.some(x => aB.some(y => x.includes(y) || y.includes(x)));
-  if (!artistOk) return false;
-
-  // 双方都有专辑名且明显不同 → 是不同版本（录音室 vs Live 等），不并。
-  // 例：范特西 270s 和 The One演唱会 273s 只差 3s，光靠时长拦不住。
-  const alA = normText(a.album);
-  const alB = normText(b.album);
-  if (alA && alB && !(alA.includes(alB) || alB.includes(alA))) return false;
-
-  if (a.duration && b.duration) {
-    // 容差 5s/5%：10% 会把 253s 的翻录版和 270s 正版(范特西)并成一组
-    const diff = Math.abs(a.duration - b.duration);
-    const tol = Math.max(5, Math.max(a.duration, b.duration) * 0.05);
-    if (diff > tol) return false;
-  }
-  return true;
+  return !!matchInfo(a, b, { strict: true });
 }
 
 function mergeSameTracks(items) {
@@ -803,7 +835,7 @@ function mergeSameTracks(items) {
 
 module.exports = {
   platform: "多源歌单",
-  version: "0.1.4",
+  version: "0.1.5",
   appVersion: ">=0.0",
   cacheControl: "no-cache",
   // id 已带 source 前缀，单主键即可全局唯一
@@ -815,6 +847,7 @@ module.exports = {
     { key: "search_source", name: "搜索源：all / qq / netease / audiomack（默认 all）" },
     { key: "fallback", name: "跨平台换源：on / off（默认 on。原生源放不了时去别的平台找同一首歌）" },
     { key: "merge", name: "搜索结果合并去重：on / off（默认 on。同一首歌只显示一条，其余源作为备选）" },
+    { key: "strict_match", name: "严格匹配：on / off（默认 off。on = 换源时拒绝无专辑信息、只靠时长顶上的候选）" },
     { key: "qq_cookie", name: "QQ音乐 Cookie（可选，用于 VIP 歌曲）" },
     { key: "ne_cookie", name: "网易云 Cookie（可选，用于 VIP 歌曲）" },
   ],
@@ -898,6 +931,9 @@ module.exports = {
   async getMediaSource(musicItem, quality) {
     const vars = getUserVariables();
     const cookies = { qq: vars.qq_cookie, ne: vars.ne_cookie };
+    // 严格模式：换源时不要「无专辑字段、只靠时长顶上」的候选（loose 档）
+    const strict =
+      String(vars.strict_match ?? "off").trim().toLowerCase() === "on";
 
     // 1. 原生源
     const native = await getSourceBySource(musicItem, quality, cookies).catch(e => {
@@ -913,20 +949,23 @@ module.exports = {
     // 2a. 优先用搜索合并时挂上的备选源（同一首歌在别的平台的副本，不用再搜一遍）
     if (Array.isArray(musicItem.alts) && musicItem.alts.length) {
       for (const alt of musicItem.alts) {
-        if (!fallbackTrustOk(musicItem, alt)) {
-          console.log(`[换源] 跳过不可信备选 ${alt.id}（专辑无法确认是同一录音）`);
+        const info = matchInfo(musicItem, alt, { strict });
+        if (!info) {
+          console.log(`[换源] 跳过不可信备选 ${alt.id}（无法确认是同一录音）`);
           continue;
         }
         const r = await getSourceBySource(alt, quality, cookies).catch(() => null);
         if (r && r.url) {
-          console.log(`[换源] "${musicItem.title}" 用搜索合并的备选源 ${alt.source}`);
+          console.log(
+            `[换源] "${musicItem.title}" 用搜索合并的备选源 ${alt.source} (${info.tier})`
+          );
           return { ...r, [_FALLBACK_FROM]: alt };
         }
       }
     }
 
     // 2b. 现场搜索换源
-    return await findAlternative(musicItem, quality, cookies).catch(e => {
+    return await findAlternative(musicItem, quality, cookies, strict).catch(e => {
       console.log("[换源] 异常:", e && e.message);
       return null;
     });
@@ -1075,6 +1114,7 @@ async function getAMMediaSource(musicItem) {
 /* 调试用：暴露内部函数（宿主会忽略未知键），不需要可删掉这段 */
 module.exports._internal = {
   amSign, amEncode, amNormalizedParams, amExtractMusicId,
-  getSourceBySource, matchScore, normText, mergeSameTracks, findAlternative,
+  getSourceBySource, matchScore, matchInfo, durationTier, sameTrack,
+  normText, mergeSameTracks, findAlternative,
 };
 
